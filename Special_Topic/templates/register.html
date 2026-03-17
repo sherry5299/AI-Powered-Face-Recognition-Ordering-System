@@ -20,7 +20,7 @@
         {% if captured_photo %}
         <div style="margin-bottom: 20px; padding: 10px; border: 2px dashed #4CAF50; width: 300px;">
             <p style="color: green; font-weight: bold;">✅ 已成功擷取臉部影像！</p>
-            <img src="{{ url_for('static', filename='uploads/' + captured_photo) }}" alt="預覽照片" width="100%" style="border-radius: 5px;">
+            <img src="{{ url_for('static', filename='member/' + captured_photo) }}" alt="預覽照片" width="100%" style="border-radius: 5px;">
             <p style="font-size: 14px; color: gray;">請點擊下方「上傳照片並註冊」完成最後步驟。</p>
         </div>
         {% endif %}

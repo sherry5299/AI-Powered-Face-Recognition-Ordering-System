@@ -2,12 +2,14 @@ import time
 import os
 import cv2
 import numpy as np
+from datetime import datetime
 
-from flask import Flask, render_template, request, redirect, url_for, session
-from werkzeug.utils import secure_filename
-app = Flask(__name__)
-app.secret_key = 'kiosk_secret_key_123' # 加入這行：Session 必須要有加密金鑰才能運作
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+app.secret_key = 'kiosk_secret_key_123'
 
 # --- 1. 取得絕對路徑與基本設定 ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -15,13 +17,20 @@ db_path = os.path.join(BASE_DIR, 'menu.db')
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-upload_path = os.path.join(BASE_DIR, 'static', 'uploads')
-app.config['UPLOAD_FOLDER'] = upload_path
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+# ================= 新增：分類上傳資料夾 =================
+menu_path = os.path.join(BASE_DIR, 'static', 'menu')
+member_path = os.path.join(BASE_DIR, 'static', 'member')
+app.config['UPLOAD_FOLDER_MENU'] = menu_path
+app.config['UPLOAD_FOLDER_MEMBER'] = member_path
+
+# 確保兩個資料夾都存在
+os.makedirs(app.config['UPLOAD_FOLDER_MENU'], exist_ok=True)
+os.makedirs(app.config['UPLOAD_FOLDER_MEMBER'], exist_ok=True)
+# =======================================================
 
 db = SQLAlchemy(app)
 
-# --- 2. 載入模型 (確保路徑為純英文) ---
+# --- 2. 載入模型 ---
 yunet_path = os.path.join(BASE_DIR, "face_detection_yunet_2023mar.onnx")
 sface_path = os.path.join(BASE_DIR, "face_recognition_sface_2021dec.onnx")
 
@@ -34,17 +43,34 @@ class MenuItem(db.Model):
     name = db.Column(db.String(100), nullable=False)
     price = db.Column(db.Integer, nullable=False)
     description = db.Column(db.String(200))
+    image_path = db.Column(db.String(200), nullable=True)
 
-# 會員模型：綁定姓名、電話與照片路徑
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     phone = db.Column(db.String(20), nullable=False)
     photo_path = db.Column(db.String(200), nullable=False)
 
+class Order(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    table_number = db.Column(db.String(50))
+    total_price = db.Column(db.Integer, nullable=False)
+    payment_method = db.Column(db.String(50))
+    status = db.Column(db.String(20), default='Pending')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    items = db.relationship('OrderItem', backref='order', lazy=True)
+
+class OrderItem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
+    item_name = db.Column(db.String(100), nullable=False)
+    quantity = db.Column(db.Integer, nullable=False)
+    price = db.Column(db.Integer, nullable=False)
+
 with app.app_context():
     db.create_all()
 
+# --- 輔助函數 ---
 def get_face_feature(image_path):
     img = cv2.imread(image_path)
     if img is None: return None
@@ -54,81 +80,155 @@ def get_face_feature(image_path):
     face_align = recognizer.alignCrop(img, faces[0])
     return recognizer.feature(face_align)
 
-# --- 4. 路由設定 (保留原本的 admin 與 checkout) ---
-COUPONS = {"WELCOME50": 50, "SAVE100": 100}
+# --- 店家後台管理 (整合登入與管理畫面) ---
+@app.route('/admin', methods=['GET', 'POST'])
+def admin_index():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        if username == '1234' and password == '1234':
+            session['admin_logged_in'] = True
+            return redirect(url_for('admin_index'))
+        else:
+            return "<h1>帳號或密碼錯誤！</h1><a href='/admin'>重新登入</a>", 401
 
+    if not session.get('admin_logged_in'):
+        return render_template('admin.html')
+        
+    items = MenuItem.query.all()
+    users = User.query.all()
+    return render_template('admin.html', items=items, users=users)
+
+@app.route('/admin_logout')
+def admin_logout():
+    session.pop('admin_logged_in', None)
+    return redirect(url_for('customer_index'))
+
+# --- 新增菜單 (儲存至 menu 資料夾) ---
+@app.route('/admin/add', methods=['POST'])
+def add_item():
+    if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
+    
+    name = request.form.get('name')
+    price = request.form.get('price')
+    desc = request.form.get('description')
+    image = request.files.get('image')
+    
+    if name and price:
+        image_filename = ""
+        if image and image.filename != '':
+            ext = os.path.splitext(image.filename)[1] or '.jpg'
+            image_filename = f"menu_{int(time.time())}{ext}"
+            # 路徑改為 UPLOAD_FOLDER_MENU
+            filepath = os.path.join(app.config['UPLOAD_FOLDER_MENU'], image_filename)
+            image.save(filepath)
+            
+        new_item = MenuItem(name=name, price=int(price), description=desc, image_path=image_filename)
+        db.session.add(new_item)
+        db.session.commit()
+        
+    return redirect(url_for('admin_index'))
+
+# --- 刪除菜單 (從 menu 資料夾刪除) ---
+@app.route('/admin/delete/<int:id>')
+def delete_item(id):
+    if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
+    item_to_delete = MenuItem.query.get_or_404(id)
+    
+    if item_to_delete.image_path:
+        # 路徑改為 UPLOAD_FOLDER_MENU
+        filepath = os.path.join(app.config['UPLOAD_FOLDER_MENU'], item_to_delete.image_path)
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        except Exception as e:
+            print(f"刪除餐點照片失敗: {e}")
+            
+    db.session.delete(item_to_delete)
+    db.session.commit()
+    return redirect(url_for('admin_index'))
+
+# --- 刪除會員並銷毀照片 ---
+@app.route('/admin/delete_user/<int:id>')
+def delete_user(id):
+    if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
+    user_to_delete = User.query.get_or_404(id)
+    
+    try:
+        # photo_path 本來就是存絕對路徑，所以直接刪除即可
+        if os.path.exists(user_to_delete.photo_path):
+            os.remove(user_to_delete.photo_path)
+    except Exception as e:
+        print(f"刪除照片失敗: {e}")
+        
+    db.session.delete(user_to_delete)
+    db.session.commit()
+    return redirect(url_for('admin_index'))
+
+# --- 客戶首頁 ---
 @app.route('/')
 def customer_index():
     items = MenuItem.query.all()
     return render_template('customer.html', items=items)
 
-@app.route('/checkout', methods=['POST'])
-def checkout():
-    total = int(request.form.get('total_price', 0))
-    coupon_code = request.form.get('coupon_code', '').upper()
-    discount = COUPONS.get(coupon_code, 0)
-    final_amount = max(0, total - discount)
-    
-    # 取得當前使用者名稱，並在結帳後清除 Session (模擬 Kiosk 點餐完畢回到首頁)
-    user_name = session.get('user_name', '顧客')
-    session.pop('user_name', None)
-    
-    return f"<h1>下單成功，{user_name}！</h1><p>原價: {total}</p><p>折抵: {discount}</p><h2>實付金額: {final_amount}</h2><a href='/'>返回首頁</a>"
-
+# --- 結帳與登出 ---
 @app.route('/logout')
 def logout():
-    # 手動取消點餐，清除 Session
     session.pop('user_name', None)
     return redirect(url_for('customer_index'))
-@app.route('/admin')
-def admin_index():
-    items = MenuItem.query.all()
-    return render_template('admin.html', items=items)
 
-@app.route('/admin/add', methods=['POST'])
-def add_item():
-    name = request.form.get('name')
-    price = request.form.get('price')
-    desc = request.form.get('description')
-    if name and price:
-        new_item = MenuItem(name=name, price=int(price), description=desc)
-        db.session.add(new_item)
-        db.session.commit()
-    return redirect(url_for('admin_index'))
+@app.route('/submit_order', methods=['POST'])
+def submit_order():
+    data = request.json
+    user_name = session.get('user_name', data.get('table_number', '一般顧客'))
+    
+    new_order = Order(
+        table_number=user_name,
+        total_price=data['total_price'],
+        payment_method=data.get('payment_method', 'Cash')
+    )
+    db.session.add(new_order)
+    db.session.flush()
 
-@app.route('/admin/delete/<int:id>')
-def delete_item(id):
-    item_to_delete = MenuItem.query.get_or_404(id)
-    db.session.delete(item_to_delete)
+    for item in data['items']:
+        order_item = OrderItem(
+            order_id=new_order.id,
+            item_name=item['name'],
+            quantity=item['quantity'],
+            price=item['price']
+        )
+        db.session.add(order_item)
+
     db.session.commit()
-    return redirect(url_for('admin_index'))
+    session.pop('user_name', None)
+    
+    return jsonify({'message': f'訂單已成功送出！感謝 {user_name} 的光臨。', 'order_id': new_order.id})
 
+# --- 會員註冊 (儲存至 member 資料夾) ---
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
         name = request.form.get('name', '')
         phone = request.form.get('phone', '')
         action = request.form.get('action')
-        captured_photo = request.form.get('captured_photo', '') # 接收隱藏欄位傳來的暫存檔名
+        captured_photo = request.form.get('captured_photo', '')
         
         if not name or not phone:
             return "<h1>請填寫完整資料</h1><a href='/register'>返回</a>", 400
 
-        # --- 分支 A：開啟相機，只拍照不寫入資料庫 ---
         if action == 'webcam':
             cap = cv2.VideoCapture(0)
             win_name = 'Auto Capture - Please look at the camera'
             cv2.namedWindow(win_name)
             
-            # 建立暫存檔名
             temp_filename = f"temp_{phone}_{int(time.time())}.jpg"
-            temp_filepath = os.path.join(app.config['UPLOAD_FOLDER'], temp_filename)
+            # 路徑改為 UPLOAD_FOLDER_MEMBER
+            temp_filepath = os.path.join(app.config['UPLOAD_FOLDER_MEMBER'], temp_filename)
             success_capture = False
 
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret: break
-
                 display_frame = frame.copy()
                 cv2.putText(display_frame, "Detecting face...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
@@ -138,12 +238,9 @@ def register():
                 if faces is not None and len(faces) > 0:
                     face_align = recognizer.alignCrop(frame, faces[0])
                     feature = recognizer.feature(face_align)
-                    
                     if feature is not None:
-                        # 儲存暫存畫面
                         cv2.imwrite(temp_filepath, frame)
                         success_capture = True
-                        
                         cv2.putText(display_frame, "Face Detected! Captured...", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                         cv2.imshow(win_name, display_frame)
                         cv2.waitKey(1000) 
@@ -158,86 +255,77 @@ def register():
 
             if not success_capture:
                 return "<h1>相機已關閉或未偵測到人臉</h1><a href='/register'>返回重新註冊</a>", 400
-
-            # 拍照成功：帶著資料與暫存照片返回註冊介面
             return render_template('register.html', name=name, phone=phone, captured_photo=temp_filename)
 
-        # --- 分支 B：真正寫入資料庫 ---
         elif action == 'register':
             photo = request.files.get('photo')
             source_path = ""
             
-            # 判斷使用者是選檔案，還是沿用剛拍好的照片
             if photo and photo.filename != '':
-                # 處理上傳檔案
                 ext = os.path.splitext(photo.filename)[1] or '.jpg'
-                source_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_upload_{phone}{ext}")
+                # 路徑改為 UPLOAD_FOLDER_MEMBER
+                source_path = os.path.join(app.config['UPLOAD_FOLDER_MEMBER'], f"temp_upload_{phone}{ext}")
                 photo.save(source_path)
             elif captured_photo:
-                # 沿用剛才相機拍的暫存檔
-                source_path = os.path.join(app.config['UPLOAD_FOLDER'], captured_photo)
+                # 路徑改為 UPLOAD_FOLDER_MEMBER
+                source_path = os.path.join(app.config['UPLOAD_FOLDER_MEMBER'], captured_photo)
                 if not os.path.exists(source_path):
                     return "<h1>找不到拍攝的照片，請重新操作！</h1><a href='/register'>返回</a>", 400
             else:
                 return "<h1>請上傳照片或使用相機拍攝！</h1><a href='/register'>返回</a>", 400
 
-            # 再次驗證特徵 (防呆)
             feature = get_face_feature(source_path)
             if feature is None:
                 os.remove(source_path)
                 return "<h1>照片中未偵測到人臉，請重新提供！</h1><a href='/register'>返回</a>", 400
 
-            # 正式取得資料庫 ID 並建立 User
-            new_user = User(name=name, phone=phone, photo_path="temp")
+            existing_users = User.query.order_by(User.id).all()
+            available_id = 1
+            for u in existing_users:
+                if u.id == available_id: available_id += 1
+                else: break
+
+            new_user = User(id=available_id, name=name, phone=phone, photo_path="temp")
             db.session.add(new_user)
             db.session.flush() 
 
-            # 將暫存檔案重新命名為正式檔名
             ext = os.path.splitext(source_path)[1]
             final_filename = f"member_{new_user.id}_{phone}{ext}"
-            final_filepath = os.path.join(app.config['UPLOAD_FOLDER'], final_filename)
+            # 路徑改為 UPLOAD_FOLDER_MEMBER
+            final_filepath = os.path.join(app.config['UPLOAD_FOLDER_MEMBER'], final_filename)
             
-            # 搬移/重新命名檔案 (確保這裡只執行一次)
             os.rename(source_path, final_filepath)
-
-            # 更新路徑並正式 Commit
             new_user.photo_path = final_filepath
             db.session.commit()
             
-            # ================= 新增：註冊完自動登入 =================
-            # 將剛註冊好的名字存入 Session，讓系統知道這位客人已登入
             session['user_name'] = new_user.name
-            
-            # 直接跳轉回首頁
             return redirect(url_for('customer_index'))
 
-    # GET 請求：顯示空白表單
     return render_template('register.html', name='', phone='', captured_photo='')
-# --- 5. 更新的人臉辨識登入邏輯 ---
+
+# --- 人臉登入 ---
 @app.route('/face_login')
 def face_login():
     users = User.query.all()
     whitelist = []
     
-    # 建立動態白名單，綁定姓名與特徵
     for u in users:
         feat = get_face_feature(u.photo_path)
         if feat is not None:
             whitelist.append({"name": u.name, "feature": feat})
             
     if not whitelist:
-        return "<h1>系統中尚未有任何有效的會員特徵，請先註冊或重新上傳照片！</h1><a href='/register'>前往註冊</a>", 400
+        return "<h1>系統中尚未有任何有效的會員特徵，請先註冊！</h1><a href='/register'>前往註冊</a>", 400
 
     cap = cv2.VideoCapture(0)
     win_name = 'Face Login - Press Q to Exit'
     cv2.namedWindow(win_name)
     recognized_user = None
-    login_success = False # 新增成功標記
+    login_success = False
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
-
         detector.setInputSize((frame.shape[1], frame.shape[0]))
         _, faces = detector.detect(frame)
 
@@ -249,54 +337,41 @@ def face_login():
                 best_score = 0
                 best_name = "Unknown"
                 
-                # 與資料庫內的會員進行特徵比對
                 for w_user in whitelist:
                     score = recognizer.match(w_user["feature"], feature, cv2.FaceRecognizerSF_FR_COSINE)
                     if score > best_score:
                         best_score = score
-                        if score > 0.36: # 餘弦相似度閾值
+                        if score > 0.36:
                             best_name = w_user["name"]
 
                 coords = face[:-1].astype(np.int32)
-                
-                # 判斷是否登入成功並繪製畫面
                 if best_name != "Unknown":
                     recognized_user = best_name
                     login_success = True
-                    color = (0, 255, 0) # 綠框
+                    color = (0, 255, 0)
                     cv2.rectangle(frame, (coords[0], coords[1]), (coords[0]+coords[2], coords[1]+coords[3]), color, 2)
-                    # 顯示名字與成功訊息 (使用英文避免亂碼)
                     cv2.putText(frame, f"{best_name} - Login Success!", (coords[0], coords[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                    break # 找到匹配者，跳出人臉偵測迴圈
+                    break 
                 else:
-                    color = (0, 0, 255) # 紅框
+                    color = (0, 0, 255)
                     cv2.rectangle(frame, (coords[0], coords[1]), (coords[0]+coords[2], coords[1]+coords[3]), color, 2)
                     cv2.putText(frame, f"Unknown: {best_score:.2f}", (coords[0], coords[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         cv2.imshow(win_name, frame)
-
-        # 成功辨識後的自動中斷處理
         if login_success:
-            cv2.waitKey(1500) # 畫面停留 1.5 秒讓使用者確認
-            break # 跳出相機讀取迴圈
-
-        # 手動退出機制
+            cv2.waitKey(1500)
+            break
         if cv2.waitKey(1) & 0xFF == ord('q'): break
         if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1: break
 
-    # 釋放資源
     cap.release()
     cv2.destroyAllWindows()
     
-    # 根據結果渲染網頁
-# ... (前面的 cap.release() 與 cv2.destroyAllWindows() 保留) ...
-    
-    # 根據結果處理登入狀態
     if recognized_user:
-        # 登入成功，將名字存入 session 並導向首頁
         session['user_name'] = recognized_user
         return redirect(url_for('customer_index'))
     else:
-        return "<h1>未能辨識身份或已取消</h1><a href='/'>返回首頁</a>"
+        return "<h1>未能辨識身份</h1><a href='/'>返回首頁</a>"
+
 if __name__ == '__main__':
     app.run(debug=True)
