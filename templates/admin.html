@@ -126,6 +126,7 @@
                     <div class="card-header bg-success text-white">
                         <h5 class="mb-0"><i class="bi bi-people-fill"></i> 會員管理 (Members)</h5>
                     </div>
+                    <!-- 會員列表區塊：可刪除會員並移除照片 -->
                     <div class="card-body">
                         <div class="table-responsive">
                             <table class="table table-hover align-middle text-center">
@@ -213,6 +214,7 @@
                                     </tr>
                                     <tr id="orderDetail{{ order.id }}" style="display:none;">
                                         <td colspan="7" class="text-start">
+                                            <!-- 訂單明細區塊，從 toggleDetails 控制顯示 -->
                                             <div class="bg-light p-2 rounded">
                                                 <strong>訂單明細</strong>
                                                 <ul class="list-unstyled mb-0">
@@ -247,6 +249,7 @@
   }
 
   window.addEventListener('DOMContentLoaded', () => {
+    // 若網址帶 highlight_order，則自動展開該訂單明細並滾動
     const params = new URLSearchParams(window.location.search);
     const id = params.get('highlight_order');
     if (id) {

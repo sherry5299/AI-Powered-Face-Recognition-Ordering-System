@@ -14,6 +14,9 @@ import csv
 app = Flask(__name__)
 app.secret_key = 'kiosk_secret_key_123'
 
+# Flask 應用程式初始化
+# app.secret_key 用於 session 加密
+
 # --- 1. 取得絕對路徑與基本設定 ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 db_path = os.path.join(BASE_DIR, 'menu.db')
@@ -41,6 +44,9 @@ detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
 recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
 # --- 3. 資料庫模型 ---
+# MenuItem: 餐點資料表
+# User: 會員資料表（包含人臉照片路徑）
+# Order + OrderItem: 訂單與訂單細項
 class MenuItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
@@ -87,6 +93,9 @@ with app.app_context():
                 conn.execute(text("ALTER TABLE menu_item ADD COLUMN is_new BOOLEAN DEFAULT 0"))
 
 # --- 輔助函數 ---
+# 讀取圖片，進行人臉偵測並回傳特徵向量
+# 用於人臉登入 / 註冊比對
+
 def get_face_feature(image_path):
     img = cv2.imread(image_path)
     if img is None: return None
@@ -97,6 +106,7 @@ def get_face_feature(image_path):
     return recognizer.feature(face_align)
 
 # --- 店家後台管理 (整合登入與管理畫面) ---
+# 需要 admin 登入，POST 提交時檢查帳密（簡單示例）
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_index():
     if request.method == 'POST':
@@ -117,12 +127,16 @@ def admin_index():
     return render_template('admin.html', items=items, users=users, orders=orders)
 
 @app.route('/admin/edit/<int:item_id>', methods=['GET'])
+# 顯示菜單編輯表單
+
 def admin_edit_item(item_id):
     if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
     item = MenuItem.query.get_or_404(item_id)
     return render_template('admin_edit_item.html', item=item)
 
 @app.route('/admin/update/<int:item_id>', methods=['POST'])
+# 處理菜單編輯儲存，支援更新圖片上傳與標記
+
 def admin_update_item(item_id):
     if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
     item = MenuItem.query.get_or_404(item_id)
@@ -152,6 +166,8 @@ def admin_logout():
 
 # --- 新增菜單 (儲存至 menu 資料夾) ---
 @app.route('/admin/add', methods=['POST'])
+# 新增菜單項目，包含圖片、分類、推薦、新品
+
 def add_item():
     if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
     
@@ -179,6 +195,8 @@ def add_item():
 
 # --- 刪除菜單 (從 menu 資料夾刪除) ---
 @app.route('/admin/delete/<int:id>')
+# 刪除菜單項目，連帶刪除本地圖片檔案
+
 def delete_item(id):
     if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
     item_to_delete = MenuItem.query.get_or_404(id)
@@ -196,6 +214,7 @@ def delete_item(id):
     return redirect(url_for('admin_index'))
 
 @app.route('/admin/update_order_status/<int:order_id>', methods=['POST'])
+# 更新訂單狀態（Pending / Completed / Cancelled）
 def update_order_status(order_id):
     if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
     new_status = request.form.get('status', 'Pending')
@@ -205,12 +224,16 @@ def update_order_status(order_id):
     return redirect(url_for('admin_index'))
 
 @app.route('/admin/edit_order/<int:order_id>')
+# 顯示訂單編輯表單
+
 def admin_edit_order(order_id):
     if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
     order = Order.query.get_or_404(order_id)
     return render_template('admin_edit_order.html', order=order)
 
 @app.route('/admin/update_order/<int:order_id>', methods=['POST'])
+# 處理訂單編輯後，更新價格、品項、狀態，並回到後台列表
+
 def admin_update_order(order_id):
     if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
     order = Order.query.get_or_404(order_id)
@@ -280,6 +303,8 @@ def delete_user(id):
 
 # --- 客戶首頁 ---
 @app.route('/')
+# 客戶首頁：顯示菜單與篩選功能
+
 def customer_index():
     items = MenuItem.query.all()
     categories = sorted({item.category or '未分類' for item in items})
@@ -293,6 +318,8 @@ def logout():
     return redirect(url_for('customer_index'))
 
 @app.route('/submit_order', methods=['POST'])
+# 客戶端送出訂單 API：接收 JSON 訂單、寫入訂單與訂單細項
+
 def submit_order():
     data = request.json
     user_name = session.get('user_name', data.get('table_number', '一般顧客'))
@@ -321,6 +348,8 @@ def submit_order():
 
 # --- 會員註冊 (儲存至 member 資料夾) ---
 @app.route('/register', methods=['GET', 'POST'])
+# 會員註冊：支援上傳照片或即時拍照後註冊
+
 def register():
     if request.method == 'POST':
         name = request.form.get('name', '')
@@ -420,6 +449,8 @@ def register():
 
 # --- 人臉登入 ---
 @app.route('/face_login')
+# 人臉登入：比對會員照片特徵，成功則設置 session 登入
+
 def face_login():
     users = User.query.all()
     whitelist = []
