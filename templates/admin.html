@@ -104,8 +104,12 @@
                                         <td class="text-danger fw-bold">${{ item.price }}</td>
                                         <td class="text-muted small">{{ item.description }}</td>
                                         <td>{{ item.category or '未分類' }}</td>
-                                        <td>{% if item.is_recommended %}<span class="badge bg-success">熱門</span>{% else %}<span class="badge bg-secondary">-</span>{% endif %}</td>
                                         <td>
+                                            {% if item.is_recommended %}<span class="badge bg-success">熱門</span>{% else %}<span class="badge bg-secondary">-</span>{% endif %}
+                                            {% if item.is_new %}<span class="badge bg-info">新品</span>{% endif %}
+                                        </td>
+                                        <td>
+                                            <a href="/admin/edit/{{ item.id }}" class="btn btn-outline-primary btn-sm"><i class="bi bi-pencil"></i> 編輯</a>
                                             <a href="/admin/delete/{{ item.id }}" class="btn btn-danger btn-sm" onclick="return confirm('確定要刪除這道菜嗎？');"><i class="bi bi-trash"></i> 刪除</a>
                                         </td>
                                     </tr>

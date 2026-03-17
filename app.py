@@ -48,6 +48,7 @@ class MenuItem(db.Model):
     description = db.Column(db.String(200))
     category = db.Column(db.String(80), nullable=False, default='未分類')
     is_recommended = db.Column(db.Boolean, default=False)
+    is_new = db.Column(db.Boolean, default=False)
     image_path = db.Column(db.String(200), nullable=True)
 
 class User(db.Model):
@@ -82,6 +83,8 @@ with app.app_context():
                 conn.execute(text("ALTER TABLE menu_item ADD COLUMN category VARCHAR(80) DEFAULT '未分類'"))
             if 'is_recommended' not in cols:
                 conn.execute(text("ALTER TABLE menu_item ADD COLUMN is_recommended BOOLEAN DEFAULT 0"))
+            if 'is_new' not in cols:
+                conn.execute(text("ALTER TABLE menu_item ADD COLUMN is_new BOOLEAN DEFAULT 0"))
 
 # --- 輔助函數 ---
 def get_face_feature(image_path):
@@ -113,6 +116,35 @@ def admin_index():
     orders = Order.query.order_by(Order.created_at.desc()).limit(20).all()
     return render_template('admin.html', items=items, users=users, orders=orders)
 
+@app.route('/admin/edit/<int:item_id>', methods=['GET'])
+def admin_edit_item(item_id):
+    if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
+    item = MenuItem.query.get_or_404(item_id)
+    return render_template('admin_edit_item.html', item=item)
+
+@app.route('/admin/update/<int:item_id>', methods=['POST'])
+def admin_update_item(item_id):
+    if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
+    item = MenuItem.query.get_or_404(item_id)
+    item.name = request.form.get('name', item.name)
+    item.price = int(request.form.get('price', item.price))
+    item.description = request.form.get('description', item.description)
+    item.category = request.form.get('category', item.category)
+    item.is_recommended = request.form.get('recommended') == 'on'
+    item.is_new = request.form.get('is_new') == 'on'
+    image = request.files.get('image')
+    if image and image.filename:
+        ext = os.path.splitext(image.filename)[1] or '.jpg'
+        image_filename = f"menu_{item.id}_{int(time.time())}{ext}"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER_MENU'], image_filename)
+        image.save(filepath)
+        if item.image_path:
+            old_path = os.path.join(app.config['UPLOAD_FOLDER_MENU'], item.image_path)
+            if os.path.exists(old_path): os.remove(old_path)
+        item.image_path = image_filename
+    db.session.commit()
+    return redirect(url_for('admin_index'))
+
 @app.route('/admin_logout')
 def admin_logout():
     session.pop('admin_logged_in', None)
@@ -138,7 +170,8 @@ def add_item():
             filepath = os.path.join(app.config['UPLOAD_FOLDER_MENU'], image_filename)
             image.save(filepath)
             
-        new_item = MenuItem(name=name, price=int(price), description=desc, category=category, is_recommended=recommended, image_path=image_filename)
+        is_new = request.form.get('is_new') == 'on'
+        new_item = MenuItem(name=name, price=int(price), description=desc, category=category, is_recommended=recommended, is_new=is_new, image_path=image_filename)
         db.session.add(new_item)
         db.session.commit()
         
@@ -214,7 +247,8 @@ def delete_user(id):
 def customer_index():
     items = MenuItem.query.all()
     categories = sorted({item.category or '未分類' for item in items})
-    return render_template('customer.html', items=items, categories=categories)
+    is_member = bool(session.get('user_name'))
+    return render_template('customer.html', items=items, categories=categories, is_member=is_member)
 
 # --- 結帳與登出 ---
 @app.route('/logout')
