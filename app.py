@@ -120,11 +120,73 @@ def admin_index():
 
     if not session.get('admin_logged_in'):
         return render_template('admin.html')
-        
+
+    # 訂單搜尋與日期篩選
+    status_filter = request.args.get('status', 'all')
+    payment_filter = request.args.get('payment_method', 'all')
+    search_term = request.args.get('search', '').strip()
+    start_date = request.args.get('start_date', '').strip()
+    end_date = request.args.get('end_date', '').strip()
+
+    # 基本資料
     items = MenuItem.query.all()
     users = User.query.all()
-    orders = Order.query.order_by(Order.created_at.desc()).limit(20).all()
-    return render_template('admin.html', items=items, users=users, orders=orders)
+
+    # 訂單查詢
+    order_q = Order.query
+    if status_filter != 'all':
+        order_q = order_q.filter(Order.status == status_filter)
+    if payment_filter != 'all':
+        order_q = order_q.filter(Order.payment_method == payment_filter)
+
+    if search_term:
+        if search_term.isdigit():
+            order_q = order_q.filter((Order.id == int(search_term)) | (Order.table_number.contains(search_term)))
+        else:
+            order_q = order_q.filter(Order.table_number.contains(search_term))
+
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            order_q = order_q.filter(Order.created_at >= start_dt)
+        except Exception:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            order_q = order_q.filter(Order.created_at <= end_dt)
+        except Exception:
+            pass
+
+    orders = order_q.order_by(Order.created_at.desc()).limit(200).all()
+
+    # 營收報表（依分頁結果計算）
+    revenue_orders = Order.query
+    if start_date:
+        try:
+            revenue_orders = revenue_orders.filter(Order.created_at >= datetime.strptime(start_date, '%Y-%m-%d'))
+        except Exception:
+            pass
+    if end_date:
+        try:
+            revenue_orders = revenue_orders.filter(Order.created_at <= datetime.strptime(end_date, '%Y-%m-%d'))
+        except Exception:
+            pass
+    revenue_orders = revenue_orders.all()
+
+    total_revenue = sum(o.total_price for o in revenue_orders)
+    total_orders = len(revenue_orders)
+    # 熱門品項統計
+    item_counter = {}
+    for o in revenue_orders:
+        for item in o.items:
+            item_counter[item.item_name] = item_counter.get(item.item_name, 0) + item.quantity
+    top_items = sorted(item_counter.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    return render_template('admin.html', items=items, users=users, orders=orders,
+                           status_filter=status_filter, payment_filter=payment_filter,
+                           search_term=search_term, start_date=start_date, end_date=end_date,
+                           total_revenue=total_revenue, total_orders=total_orders, top_items=top_items)
 
 @app.route('/admin/edit/<int:item_id>', methods=['GET'])
 # 顯示菜單編輯表單
