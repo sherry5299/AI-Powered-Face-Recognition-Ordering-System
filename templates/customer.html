@@ -151,6 +151,12 @@
             <div class="d-flex justify-content-between mb-2"><span class="fw-bold">總計</span><span class="fw-bold text-danger">$<span id="cart-total">0.00</span></span></div>
             <div class="d-flex justify-content-between mb-2"><span class="fw-bold">會員折扣</span><span class="text-success">$<span id="cart-discount">0.00</span></span></div>
             <div class="d-flex justify-content-between mb-2"><span class="fw-bold">應付金額</span><span class="fw-bold text-warning">$<span id="cart-final">0.00</span></span></div>
+            <div class="mb-2 small text-muted">會員點數：{{ user_points if is_member else 0 }} 點</div>
+            <div class="mb-3" id="pointsSection" style="display: {{ 'block' if is_member else 'none' }};">
+                <label class="form-label">使用點數折抵（每 {{ points_to_cash }} 點折抵 1 元）</label>
+                <input id="usePoints" type="number" min="0" value="0" class="form-control form-control-sm" placeholder="輸入要使用的點數" oninput="updateCartUI()">
+                <div class="form-text">可使用點數：{{ user_points }} 點</div>
+            </div>
             <div class="mb-3">
                 <label class="form-label">付款方式</label>
                 <select id="paymentMethod" class="form-select">
@@ -218,7 +224,10 @@
         const finalEl = document.getElementById('cart-final');
         const total = cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
         const discount = isMember ? total * memberDiscountRate : 0;
-        const final = total - discount;
+        const usePoints = Number(document.getElementById('usePoints')?.value || 0);
+        const pointsToCash = Number({{ points_to_cash }});
+        const pointsDiscount = isMember && usePoints > 0 ? Math.floor(usePoints / pointsToCash) : 0;
+        const final = Math.max(0, total - discount - pointsDiscount);
         count.innerText = cart.reduce((acc, i) => acc + i.quantity, 0);
         if (!cart.length) {
             container.innerHTML = '<div class="text-center text-muted">購物車目前空空如也</div>';
@@ -240,7 +249,7 @@
             </div>
         `).join('');
         totalEl.innerText = total.toFixed(2);
-        discountEl.innerText = discount.toFixed(2);
+        discountEl.innerText = (discount + pointsDiscount).toFixed(2);
         finalEl.innerText = final.toFixed(2);
     }
 
@@ -255,13 +264,16 @@
         if (!cart.length) { alert('購物車為空'); return; }
         const subtotal = cart.reduce((a,i)=>a+i.price*i.quantity,0);
         const discount = isMember ? subtotal * memberDiscountRate : 0;
-        const final = subtotal - discount;
+        const usePoints = Number(document.getElementById('usePoints')?.value || 0);
+        const pointsToCash = Number({{ points_to_cash }});
+        const pointsDiscount = isMember && usePoints > 0 ? Math.floor(usePoints / pointsToCash) : 0;
+        const final = Math.max(0, subtotal - discount - pointsDiscount);
         const preview = document.getElementById('preview-items');
         preview.innerHTML = '<ul class="list-group">' + cart.map(item => `<li class="list-group-item bg-dark text-white">${item.name} x${item.quantity} - $${(item.price*item.quantity).toFixed(2)}</li>`).join('') + '</ul>';
         document.getElementById('preview-subtotal').innerText = subtotal.toFixed(2);
-        document.getElementById('preview-discount').innerText = discount.toFixed(2);
+        document.getElementById('preview-discount').innerText = (discount + pointsDiscount).toFixed(2);
         document.getElementById('preview-final').innerText = final.toFixed(2);
-        document.getElementById('preview-note').innerText = isMember ? '會員折扣 10% 已套用' : '非會員無折扣';
+        document.getElementById('preview-note').innerText = isMember ? `會員折扣 10% 已套用，點數折抵 $${pointsDiscount}` : '非會員無折扣';
         const modal = new bootstrap.Modal(document.getElementById('confirmModal'));
         modal.show();
     }
@@ -269,8 +281,11 @@
     function confirmCheckout() {
         const subtotal = cart.reduce((a,i)=>a+i.price*i.quantity,0);
         const discount = isMember ? subtotal * memberDiscountRate : 0;
-        const final = subtotal - discount;
-        fetch('/submit_order', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({items: cart, total_price: Math.round(final), payment_method: document.getElementById('paymentMethod').value})})
+        const usePoints = Number(document.getElementById('usePoints')?.value || 0);
+        const pointsToCash = Number({{ points_to_cash }});
+        const pointsDiscount = isMember && usePoints > 0 ? Math.floor(usePoints / pointsToCash) : 0;
+        const final = Math.max(0, subtotal - discount - pointsDiscount);
+        fetch('/submit_order', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({items: cart, total_price: Math.round(final), payment_method: document.getElementById('paymentMethod').value, use_points: usePoints})})
             .then(r => r.json())
             .then(data => { alert(data.message); cart=[]; updateCartUI(); window.location.reload(); })
             .catch(e => { console.error(e); alert('結帳錯誤，請稍後再試'); });

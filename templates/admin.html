@@ -42,6 +42,23 @@
     </nav>
 
     <div class="container-fluid px-4">
+        <div class="card mb-3 shadow-sm border-0">
+            <div class="card-body bg-light">
+                <h5 class="card-title">會員點數設定</h5>
+                <form action="/admin/update_settings" method="POST" class="row g-2 align-items-end">
+                    <div class="col-md-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="points_feature_enabled" id="points_enabled" {% if points_feature_enabled == '1' %}checked{% endif %}>
+                            <label class="form-check-label" for="points_enabled">啟用點數機制</label>
+                        </div>
+                    </div>
+                    <div class="col-md-3"><label class="form-label small">幾點折抵 1 元</label><input class="form-control" type="number" name="points_to_cash_ratio" min="1" value="{{ points_to_cash }}"></div>
+                    <div class="col-md-3"><label class="form-label small">每 10 元獲得點數</label><input class="form-control" type="number" name="points_earning_rate" min="0" value="{{ points_earning_rate }}"></div>
+                    <div class="col-md-2"><button class="btn btn-primary btn-sm w-100">儲存設定</button></div>
+                </form>
+                <div class="text-muted small mt-2">若不啟用，會員結帳不會扣點及獲點。</div>
+            </div>
+        </div>
         <div class="row">
             
             <div class="col-md-6 mb-4">
@@ -211,13 +228,13 @@
                             <table class="table table-hover align-middle text-center">
                                 <thead class="table-light">
                                     <tr>
-                                        <th>#訂單</th>
+                                        <th>訂單</th>
                                         <th>會員 / 桌號</th>
                                         <th>總價</th>
                                         <th>付款方式</th>
                                         <th>狀態</th>
                                         <th>時間</th>
-                                        <th>水</th>
+                                        <th>詳情</th>
                                     </tr>
                                 </thead>
                                 <tbody>

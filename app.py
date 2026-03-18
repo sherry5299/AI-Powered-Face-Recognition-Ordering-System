@@ -62,6 +62,7 @@ class User(db.Model):
     name = db.Column(db.String(100), nullable=False)
     phone = db.Column(db.String(20), nullable=False)
     photo_path = db.Column(db.String(200), nullable=False)
+    points = db.Column(db.Integer, default=0)
 
 class Order(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -79,6 +80,32 @@ class OrderItem(db.Model):
     quantity = db.Column(db.Integer, nullable=False)
     price = db.Column(db.Integer, nullable=False)
 
+class Setting(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), unique=True, nullable=False)
+    value = db.Column(db.String(200), nullable=False)
+
+# 助手函數：後台設定參數存取
+
+def get_setting(key, default=None):
+    s = Setting.query.filter_by(name=key).first()
+    if s:
+        return s.value
+    if default is not None:
+        set_setting(key, default)
+        return default
+    return None
+
+
+def set_setting(key, value):
+    s = Setting.query.filter_by(name=key).first()
+    if s:
+        s.value = str(value)
+    else:
+        s = Setting(name=key, value=str(value))
+        db.session.add(s)
+    db.session.commit()
+
 with app.app_context():
     db.create_all()
     insp = db.inspect(db.engine)
@@ -91,6 +118,19 @@ with app.app_context():
                 conn.execute(text("ALTER TABLE menu_item ADD COLUMN is_recommended BOOLEAN DEFAULT 0"))
             if 'is_new' not in cols:
                 conn.execute(text("ALTER TABLE menu_item ADD COLUMN is_new BOOLEAN DEFAULT 0"))
+    if 'setting' in insp.get_table_names():
+        cols = [c['name'] for c in insp.get_columns('setting')]
+        with db.engine.begin() as conn:
+            if 'name' not in cols:
+                conn.execute(text("ALTER TABLE setting ADD COLUMN name VARCHAR(100) DEFAULT ''"))
+            if 'value' not in cols:
+                conn.execute(text("ALTER TABLE setting ADD COLUMN value VARCHAR(200) DEFAULT ''"))
+
+    if 'user' in insp.get_table_names():
+        cols = [c['name'] for c in insp.get_columns('user')]
+        with db.engine.begin() as conn:
+            if 'points' not in cols:
+                conn.execute(text("ALTER TABLE user ADD COLUMN points INTEGER DEFAULT 0"))
 
 # --- 輔助函數 ---
 # 讀取圖片，進行人臉偵測並回傳特徵向量
@@ -183,10 +223,17 @@ def admin_index():
             item_counter[item.item_name] = item_counter.get(item.item_name, 0) + item.quantity
     top_items = sorted(item_counter.items(), key=lambda x: x[1], reverse=True)[:5]
 
+    points_feature_enabled = get_setting('points_feature_enabled', '1')
+    points_to_cash = get_setting('points_to_cash_ratio', '10')
+    points_earning_rate = get_setting('points_earning_rate', '1')
+
     return render_template('admin.html', items=items, users=users, orders=orders,
                            status_filter=status_filter, payment_filter=payment_filter,
                            search_term=search_term, start_date=start_date, end_date=end_date,
-                           total_revenue=total_revenue, total_orders=total_orders, top_items=top_items)
+                           total_revenue=total_revenue, total_orders=total_orders, top_items=top_items,
+                           points_feature_enabled=points_feature_enabled,
+                           points_to_cash=points_to_cash,
+                           points_earning_rate=points_earning_rate)
 
 @app.route('/admin/edit/<int:item_id>', methods=['GET'])
 # 顯示菜單編輯表單
@@ -285,6 +332,17 @@ def update_order_status(order_id):
     db.session.commit()
     return redirect(url_for('admin_index'))
 
+@app.route('/admin/update_settings', methods=['POST'])
+def admin_update_settings():
+    if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
+    enabled = request.form.get('points_feature_enabled', '0')
+    ratio = request.form.get('points_to_cash_ratio', '10')
+    earning = request.form.get('points_earning_rate', '1')
+    set_setting('points_feature_enabled', '1' if enabled == 'on' else '0')
+    set_setting('points_to_cash_ratio', str(max(1, int(ratio))))
+    set_setting('points_earning_rate', str(max(0, int(earning))))
+    return redirect(url_for('admin_index'))
+
 @app.route('/admin/edit_order/<int:order_id>')
 # 顯示訂單編輯表單
 
@@ -371,7 +429,12 @@ def customer_index():
     items = MenuItem.query.all()
     categories = sorted({item.category or '未分類' for item in items})
     is_member = bool(session.get('user_name'))
-    return render_template('customer.html', items=items, categories=categories, is_member=is_member)
+    user_points = 0
+    points_to_cash = int(get_setting('points_to_cash_ratio', '10'))
+    if is_member and session.get('user_id'):
+        member = User.query.get(session.get('user_id'))
+        user_points = member.points if member else 0
+    return render_template('customer.html', items=items, categories=categories, is_member=is_member, user_points=user_points, points_to_cash=points_to_cash)
 
 # --- 結帳與登出 ---
 @app.route('/logout')
@@ -385,15 +448,34 @@ def logout():
 def submit_order():
     data = request.json
     user_name = session.get('user_name', data.get('table_number', '一般顧客'))
-    
+    user_id = session.get('user_id')
+    points_enabled = get_setting('points_feature_enabled', '1') == '1'
+    points_to_cash = int(get_setting('points_to_cash_ratio', '10'))
+    points_earning_rate = int(get_setting('points_earning_rate', '1'))
+
+    use_points = int(data.get('use_points', 0)) if data.get('use_points') else 0
+    total_price = data['total_price']
+    discount_points = 0
+    discount_amount = 0
+
+    if points_enabled and user_id and use_points > 0:
+        user = User.query.get(user_id)
+        if user:
+            allow_points = min(use_points, user.points)
+            discount_amount = allow_points // points_to_cash
+            discount_points = allow_points if discount_amount > 0 else 0
+            total_price = max(0, total_price - discount_amount)
+            user.points = user.points - discount_points
+
     new_order = Order(
         table_number=user_name,
-        total_price=data['total_price'],
+        total_price=total_price,
         payment_method=data.get('payment_method', 'Cash')
     )
     db.session.add(new_order)
     db.session.flush()
 
+    order_total_for_points = 0
     for item in data['items']:
         order_item = OrderItem(
             order_id=new_order.id,
@@ -402,11 +484,17 @@ def submit_order():
             price=item['price']
         )
         db.session.add(order_item)
+        order_total_for_points += item['price'] * item['quantity']
+
+    if user_id and points_enabled:
+        user = User.query.get(user_id)
+        if user:
+            earn = (order_total_for_points // 10) * points_earning_rate
+            user.points += earn
 
     db.session.commit()
-    session.pop('user_name', None)
-    
-    return jsonify({'message': f'訂單已成功送出！感謝 {user_name} 的光臨。', 'order_id': new_order.id})
+    # 不登出會員，保持單次登入
+    return jsonify({'message': f'訂單已成功送出！感謝 {user_name} 的光臨。', 'order_id': new_order.id, 'discount': discount_amount, 'used_points': discount_points})
 
 # --- 會員註冊 (儲存至 member 資料夾) ---
 @app.route('/register', methods=['GET', 'POST'])
@@ -505,6 +593,7 @@ def register():
             db.session.commit()
             
             session['user_name'] = new_user.name
+            session['user_id'] = new_user.id
             return redirect(url_for('customer_index'))
 
     return render_template('register.html', name='', phone='', captured_photo='')
@@ -576,7 +665,12 @@ def face_login():
     cv2.destroyAllWindows()
     
     if recognized_user:
-        session['user_name'] = recognized_user
+        user_obj = User.query.filter_by(name=recognized_user).first()
+        if user_obj:
+            session['user_name'] = user_obj.name
+            session['user_id'] = user_obj.id
+        else:
+            session['user_name'] = recognized_user
         return redirect(url_for('customer_index'))
     else:
         return "<h1>未能辨識身份</h1><a href='/'>返回首頁</a>"
