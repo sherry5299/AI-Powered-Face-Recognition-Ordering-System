@@ -152,11 +152,14 @@
             <div class="d-flex justify-content-between mb-2"><span class="fw-bold">會員折扣</span><span class="text-success">$<span id="cart-discount">0.00</span></span></div>
             <div class="d-flex justify-content-between mb-2"><span class="fw-bold">應付金額</span><span class="fw-bold text-warning">$<span id="cart-final">0.00</span></span></div>
             <div class="mb-2 small text-muted">會員點數：{{ user_points if is_member else 0 }} 點</div>
-            <div class="mb-3" id="pointsSection" style="display: {{ 'block' if is_member else 'none' }};">
+            <div class="mb-3" id="pointsSection" style="display: {{ 'block' if is_member and points_redemption_enabled else 'none' }};">
                 <label class="form-label">使用點數折抵（每 {{ points_to_cash }} 點折抵 1 元）</label>
                 <input id="usePoints" type="number" min="0" value="0" class="form-control form-control-sm" placeholder="輸入要使用的點數" oninput="updateCartUI()">
                 <div class="form-text">可使用點數：{{ user_points }} 點</div>
             </div>
+            {% if is_member and not points_earning_enabled %}
+            <div class="alert alert-warning py-1 mt-0 mb-3 small">目前已關閉點數獲得，結帳不會累積新點數。</div>
+            {% endif %}
             <div class="mb-3">
                 <label class="form-label">付款方式</label>
                 <select id="paymentMethod" class="form-select">
@@ -202,7 +205,9 @@
 
     // 會員折扣判斷
     const isMember = {{ 'true' if is_member else 'false' }};
-    const memberDiscountRate = 0.10;
+    const pointsRedemptionEnabled = {{ 'true' if points_redemption_enabled else 'false' }};
+    const pointsEarningEnabled = {{ 'true' if points_earning_enabled else 'false' }};
+    const memberDiscountRate = 0;
 
     function addToCart(id, name, price) {
         const item = cart.find(i => i.id === id);
@@ -226,7 +231,7 @@
         const discount = isMember ? total * memberDiscountRate : 0;
         const usePoints = Number(document.getElementById('usePoints')?.value || 0);
         const pointsToCash = Number({{ points_to_cash }});
-        const pointsDiscount = isMember && usePoints > 0 ? Math.floor(usePoints / pointsToCash) : 0;
+        const pointsDiscount = isMember && pointsRedemptionEnabled && usePoints > 0 ? Math.floor(usePoints / pointsToCash) : 0;
         const final = Math.max(0, total - discount - pointsDiscount);
         count.innerText = cart.reduce((acc, i) => acc + i.quantity, 0);
         if (!cart.length) {
@@ -266,7 +271,7 @@
         const discount = isMember ? subtotal * memberDiscountRate : 0;
         const usePoints = Number(document.getElementById('usePoints')?.value || 0);
         const pointsToCash = Number({{ points_to_cash }});
-        const pointsDiscount = isMember && usePoints > 0 ? Math.floor(usePoints / pointsToCash) : 0;
+        const pointsDiscount = isMember && pointsRedemptionEnabled && usePoints > 0 ? Math.floor(usePoints / pointsToCash) : 0;
         const final = Math.max(0, subtotal - discount - pointsDiscount);
         const preview = document.getElementById('preview-items');
         preview.innerHTML = '<ul class="list-group">' + cart.map(item => `<li class="list-group-item bg-dark text-white">${item.name} x${item.quantity} - $${(item.price*item.quantity).toFixed(2)}</li>`).join('') + '</ul>';
@@ -283,7 +288,7 @@
         const discount = isMember ? subtotal * memberDiscountRate : 0;
         const usePoints = Number(document.getElementById('usePoints')?.value || 0);
         const pointsToCash = Number({{ points_to_cash }});
-        const pointsDiscount = isMember && usePoints > 0 ? Math.floor(usePoints / pointsToCash) : 0;
+        const pointsDiscount = isMember && pointsRedemptionEnabled && usePoints > 0 ? Math.floor(usePoints / pointsToCash) : 0;
         const final = Math.max(0, subtotal - discount - pointsDiscount);
         fetch('/submit_order', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({items: cart, total_price: Math.round(final), payment_method: document.getElementById('paymentMethod').value, use_points: usePoints})})
             .then(r => r.json())

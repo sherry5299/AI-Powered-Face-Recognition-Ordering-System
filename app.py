@@ -223,16 +223,18 @@ def admin_index():
             item_counter[item.item_name] = item_counter.get(item.item_name, 0) + item.quantity
     top_items = sorted(item_counter.items(), key=lambda x: x[1], reverse=True)[:5]
 
-    points_feature_enabled = get_setting('points_feature_enabled', '1')
+    points_redemption_enabled = get_setting('points_redemption_enabled', '1')
     points_to_cash = get_setting('points_to_cash_ratio', '10')
+    points_earning_enabled = get_setting('points_earning_enabled', '1')
     points_earning_rate = get_setting('points_earning_rate', '1')
 
     return render_template('admin.html', items=items, users=users, orders=orders,
                            status_filter=status_filter, payment_filter=payment_filter,
                            search_term=search_term, start_date=start_date, end_date=end_date,
                            total_revenue=total_revenue, total_orders=total_orders, top_items=top_items,
-                           points_feature_enabled=points_feature_enabled,
+                           points_redemption_enabled=points_redemption_enabled,
                            points_to_cash=points_to_cash,
+                           points_earning_enabled=points_earning_enabled,
                            points_earning_rate=points_earning_rate)
 
 @app.route('/admin/edit/<int:item_id>', methods=['GET'])
@@ -335,12 +337,14 @@ def update_order_status(order_id):
 @app.route('/admin/update_settings', methods=['POST'])
 def admin_update_settings():
     if not session.get('admin_logged_in'): return redirect(url_for('admin_index'))
-    enabled = request.form.get('points_feature_enabled', '0')
-    ratio = request.form.get('points_to_cash_ratio', '10')
-    earning = request.form.get('points_earning_rate', '1')
-    set_setting('points_feature_enabled', '1' if enabled == 'on' else '0')
-    set_setting('points_to_cash_ratio', str(max(1, int(ratio))))
-    set_setting('points_earning_rate', str(max(0, int(earning))))
+    redemption_enabled = request.form.get('points_redemption_enabled', '0')
+    to_cash = request.form.get('points_to_cash_ratio', '10')
+    earning_enabled = request.form.get('points_earning_enabled', '0')
+    earning_rate = request.form.get('points_earning_rate', '1')
+    set_setting('points_redemption_enabled', '1' if redemption_enabled == 'on' else '0')
+    set_setting('points_to_cash_ratio', str(max(1, int(to_cash))))
+    set_setting('points_earning_enabled', '1' if earning_enabled == 'on' else '0')
+    set_setting('points_earning_rate', str(max(0, int(earning_rate))))
     return redirect(url_for('admin_index'))
 
 @app.route('/admin/edit_order/<int:order_id>')
@@ -431,10 +435,12 @@ def customer_index():
     is_member = bool(session.get('user_name'))
     user_points = 0
     points_to_cash = int(get_setting('points_to_cash_ratio', '10'))
+    points_redemption_enabled = get_setting('points_redemption_enabled', '1') == '1'
+    points_earning_enabled = get_setting('points_earning_enabled', '1') == '1'
     if is_member and session.get('user_id'):
         member = User.query.get(session.get('user_id'))
         user_points = member.points if member else 0
-    return render_template('customer.html', items=items, categories=categories, is_member=is_member, user_points=user_points, points_to_cash=points_to_cash)
+    return render_template('customer.html', items=items, categories=categories, is_member=is_member, user_points=user_points, points_to_cash=points_to_cash, points_redemption_enabled=points_redemption_enabled, points_earning_enabled=points_earning_enabled)
 
 # --- 結帳與登出 ---
 @app.route('/logout')
@@ -449,16 +455,19 @@ def submit_order():
     data = request.json
     user_name = session.get('user_name', data.get('table_number', '一般顧客'))
     user_id = session.get('user_id')
-    points_enabled = get_setting('points_feature_enabled', '1') == '1'
+    points_redemption_enabled = get_setting('points_redemption_enabled', '1') == '1'
     points_to_cash = int(get_setting('points_to_cash_ratio', '10'))
+    points_earning_enabled = get_setting('points_earning_enabled', '1') == '1'
     points_earning_rate = int(get_setting('points_earning_rate', '1'))
+    member_discount_enabled = get_setting('member_discount_enabled', '1') == '1'
+    member_discount_rate = float(get_setting('member_discount_rate', '0.10'))
 
     use_points = int(data.get('use_points', 0)) if data.get('use_points') else 0
     total_price = data['total_price']
     discount_points = 0
     discount_amount = 0
 
-    if points_enabled and user_id and use_points > 0:
+    if points_redemption_enabled and user_id and use_points > 0:
         user = User.query.get(user_id)
         if user:
             allow_points = min(use_points, user.points)
@@ -466,6 +475,12 @@ def submit_order():
             discount_points = allow_points if discount_amount > 0 else 0
             total_price = max(0, total_price - discount_amount)
             user.points = user.points - discount_points
+
+    if user_id and points_earning_enabled:
+        user = User.query.get(user_id)
+        if user:
+            earn = (sum(item['price'] * item['quantity'] for item in data['items']) // 10) * points_earning_rate
+            user.points += earn
 
     new_order = Order(
         table_number=user_name,
@@ -486,7 +501,7 @@ def submit_order():
         db.session.add(order_item)
         order_total_for_points += item['price'] * item['quantity']
 
-    if user_id and points_enabled:
+    if user_id and points_earning_enabled:
         user = User.query.get(user_id)
         if user:
             earn = (order_total_for_points // 10) * points_earning_rate
